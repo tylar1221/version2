@@ -523,18 +523,19 @@
 import streamlit as st
 from supabase import create_client
 import pandas as pd
+import time
 
 # =============================
-# PAGE CONFIG (MUST BE FIRST)
+# PAGE CONFIG
 # =============================
 st.set_page_config(
-    page_title="Vehicle Damage Labeler",
+    page_title="Vehicle Damage Labeler - DEBUG",
     page_icon="🚗",
     layout="wide"
 )
 
 # =============================
-# SUPABASE CONFIG (SECURE)
+# SUPABASE CONFIG
 # =============================
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -557,63 +558,106 @@ defaults = {
     "page": 0,
     "images": [],
     "labels": {},
-    "labels_refresh_counter": 0,
+    "all_labels": {},  # NEW: Store all labels including from other folders
     "current_index": 0,
     "filter_unlabeled": True,
     "current_name": None,
     "current_image": None,
-    "last_refresh_counter": 0,
+    "debug_mode": False,  # NEW: Debug mode toggle
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # =============================
-# HELPERS
+# DEBUGGING HELPERS
 # =============================
-def load_labels(force_refresh=False):
-    """Load labels from Supabase"""
+def load_all_labels():
+    """Load ALL labels from Supabase - no filtering"""
     try:
+        st.info("🔄 Loading ALL labels from database...")
         res = supabase.table("image_damage_labels").select("*").execute()
+        
+        # Debug output
         if res.data:
+            st.success(f"✅ Loaded {len(res.data)} labels from database")
+            
+            # Check specifically for image_958.jpeg
+            for label in res.data:
+                if "958" in label.get("image_name", ""):
+                    st.warning(f"Found label for image_958.jpeg: {label}")
+            
             return {r["image_name"]: r for r in res.data}
         return {}
     except Exception as e:
-        st.error(f"Error loading labels: {e}")
+        st.error(f"❌ Error loading labels: {e}")
         return {}
 
-def get_folders():
-    """Get list of folders from storage"""
+def check_specific_image(image_name="image_958.jpeg"):
+    """Check if a specific image exists in database"""
     try:
-        files = supabase.storage.from_(BUCKET_NAME).list("")
-        return sorted([f["name"] for f in files if f.get("id") is None])
+        res = supabase.table("image_damage_labels")\
+            .select("*")\
+            .eq("image_name", image_name)\
+            .execute()
+        
+        if res.data:
+            st.success(f"✅ {image_name} FOUND in database:")
+            st.json(res.data[0])
+            return True
+        else:
+            st.error(f"❌ {image_name} NOT FOUND in database")
+            return False
     except Exception as e:
-        st.error(f"Error loading folders: {e}")
-        return []
+        st.error(f"❌ Error checking {image_name}: {e}")
+        return False
 
-def get_images_page(folder, page=0, unlabeled_only=True):
-    """Get images for current page - FIXED VERSION"""
+def get_images_with_debug(folder, page=0, unlabeled_only=True):
+    """Get images with detailed debugging"""
     if not folder:
         return []
     
     try:
-        # Get ALL images from storage
+        # Get all images from storage
+        st.info(f"📂 Loading images from folder: {folder}")
         files = supabase.storage.from_(BUCKET_NAME).list(folder)
+        
         images = [
             f for f in files
             if f["name"].lower().endswith((".jpg", ".jpeg", ".png"))
         ]
         
-        # Always refresh labels from database
-        fresh_labels = load_labels(force_refresh=True)
-        st.session_state.labels = fresh_labels
+        st.success(f"✅ Found {len(images)} images in storage")
         
-        # Filter using fresh labels
+        # Load ALL labels
+        all_labels = load_all_labels()
+        st.session_state.all_labels = all_labels
+        
+        # Debug: Check for image_958.jpeg in labels
+        if "image_958.jpeg" in all_labels:
+            st.success("🎯 image_958.jpeg is in loaded labels")
+        else:
+            st.error("❌ image_958.jpeg is NOT in loaded labels")
+            
+            # Try case-insensitive check
+            for label_name in all_labels.keys():
+                if "958" in label_name.lower():
+                    st.warning(f"Found similar: {label_name}")
+        
+        # Filter if needed
         if unlabeled_only:
+            before_count = len(images)
             images = [
                 img for img in images
-                if img["name"] not in fresh_labels
+                if img["name"] not in all_labels
             ]
+            after_count = len(images)
+            st.info(f"📊 Filtered: {before_count} → {after_count} images ({before_count - after_count} labeled)")
+            
+            # Debug: Check if image_958.jpeg is in filtered list
+            for img in images:
+                if "958" in img["name"]:
+                    st.warning(f"⚠️ image_958.jpeg is in UNLABELED list! This is the problem.")
         
         # Pagination
         start = page * PAGE_SIZE
@@ -621,11 +665,21 @@ def get_images_page(folder, page=0, unlabeled_only=True):
         return images[start:end]
         
     except Exception as e:
-        st.error(f"Error loading images: {e}")
+        st.error(f"❌ Error loading images: {e}")
+        return []
+
+# =============================
+# MAIN FUNCTIONS
+# =============================
+def get_folders():
+    try:
+        files = supabase.storage.from_(BUCKET_NAME).list("")
+        return sorted([f["name"] for f in files if f.get("id") is None])
+    except Exception as e:
+        st.error(f"Error loading folders: {e}")
         return []
 
 def load_current_image():
-    """Load current image URL"""
     if not st.session_state.images:
         st.session_state.current_name = None
         st.session_state.current_image = None
@@ -641,8 +695,8 @@ def load_current_image():
     except Exception as e:
         st.error(f"Error loading image: {e}")
 
-def save_label(image_name, description, side, severity):
-    """Save label to database"""
+def save_label_with_debug(image_name, description, side, severity):
+    """Save label with detailed debugging"""
     try:
         image_path = f"{st.session_state.selected_folder}/{image_name}"
         
@@ -654,6 +708,9 @@ def save_label(image_name, description, side, severity):
             "severity": severity,
         }
         
+        # DEBUG: Before saving
+        st.info(f"💾 Attempting to save label for: {image_name}")
+        
         # Check if exists
         existing = supabase.table("image_damage_labels")\
             .select("id")\
@@ -662,87 +719,92 @@ def save_label(image_name, description, side, severity):
         
         if existing.data:
             # Update
-            supabase.table("image_damage_labels")\
+            st.info(f"🔄 Updating existing label for {image_name}")
+            result = supabase.table("image_damage_labels")\
                 .update(payload)\
                 .eq("image_name", image_name)\
                 .execute()
         else:
             # Insert
-            supabase.table("image_damage_labels")\
+            st.info(f"➕ Inserting new label for {image_name}")
+            result = supabase.table("image_damage_labels")\
                 .insert(payload)\
                 .execute()
         
-        # Force refresh
-        st.session_state.labels = load_labels(force_refresh=True)
-        st.session_state.labels_refresh_counter += 1
+        # Force immediate refresh
+        st.session_state.all_labels = load_all_labels()
         
-        st.success(f"✅ Label saved for {image_name}")
+        # Verify save
+        check_specific_image(image_name)
+        
+        st.success(f"✅ Label saved successfully for {image_name}")
         return True
         
     except Exception as e:
-        st.error(f"Error saving label: {e}")
+        st.error(f"❌ Error saving label: {e}")
         return False
-
-# =============================
-# INITIAL LOAD
-# =============================
-st.session_state.labels = load_labels(force_refresh=True)
 
 # =============================
 # UI
 # =============================
-st.title("📂 Vehicle Damage Labeler")
+st.title("🔧 Vehicle Damage Labeler - DEBUG MODE")
 
-tab1, tab2 = st.tabs(["🏷️ Labeling", "📊 Live Supabase Data"])
+# Debug controls at top
+with st.expander("🔍 Debug Controls", expanded=True):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔄 Force Reload ALL Labels"):
+            st.session_state.all_labels = load_all_labels()
+            st.rerun()
+    with col2:
+        if st.button("🔍 Check image_958.jpeg"):
+            check_specific_image("image_958.jpeg")
+    with col3:
+        st.session_state.debug_mode = st.checkbox("Enable Debug Mode", value=True)
+
+tab1, tab2, tab3 = st.tabs(["🏷️ Labeling", "📊 Database", "🔧 Debug Panel"])
 
 # =============================
 # TAB 1: LABELING
 # =============================
 with tab1:
-    # Folder selection
     folders = get_folders()
+    
     if not folders:
         st.info("No folders found in storage.")
         st.stop()
     
     selected = st.selectbox("📁 Select Batch Folder", folders)
     
-    # Check if refresh needed
-    refresh_needed = st.session_state.get('labels_refresh_counter', 0) != st.session_state.get('last_refresh_counter', 0)
-    
-    if selected != st.session_state.selected_folder or refresh_needed:
+    if selected != st.session_state.selected_folder:
         st.session_state.selected_folder = selected
         st.session_state.page = 0
         st.session_state.current_index = 0
-        st.session_state.images = get_images_page(
+        st.session_state.images = get_images_with_debug(
             selected, 0, st.session_state.filter_unlabeled
         )
         load_current_image()
-        st.session_state.last_refresh_counter = st.session_state.labels_refresh_counter
     
-    # Filter checkbox with callback
-    def update_filter():
-        st.session_state.page = 0
-        st.session_state.current_index = 0
-        st.session_state.images = get_images_page(
-            st.session_state.selected_folder,
-            0,
-            st.session_state.filter_unlabeled
+    # Filter checkbox
+    st.checkbox(
+        "Show only unlabeled images",
+        key="filter_unlabeled",
+        on_change=lambda: (
+            st.session_state.update({
+                "page": 0,
+                "current_index": 0,
+                "images": get_images_with_debug(
+                    st.session_state.selected_folder,
+                    0,
+                    st.session_state.filter_unlabeled
+                )
+            }),
+            load_current_image()
         )
-        load_current_image()
+    )
     
-    filter_col1, filter_col2 = st.columns([1, 3])
-    with filter_col1:
-        st.checkbox(
-            "Show only unlabeled images",
-            key="filter_unlabeled",
-            on_change=update_filter,
-            help="Images will disappear immediately after labeling."
-        )
-    
-    # Check if no images
     if not st.session_state.images:
-        st.info("✅ No unlabeled images in this folder!" if st.session_state.filter_unlabeled else "No images available in this folder.")
+        st.info("✅ No unlabeled images in this folder!")
         
         # Show statistics
         if st.session_state.selected_folder:
@@ -751,90 +813,71 @@ with tab1:
                     f for f in supabase.storage.from_(BUCKET_NAME).list(st.session_state.selected_folder)
                     if f["name"].lower().endswith((".jpg", ".jpeg", ".png"))
                 ])
-                labeled = len([name for name in st.session_state.labels.keys() 
-                              if name.startswith(st.session_state.selected_folder)])
-                st.metric(f"📊 Progress", 
-                         f"{labeled}/{total_images} labeled ({labeled/total_images*100:.0f}%)")
+                labeled = len([name for name in st.session_state.all_labels.keys() 
+                              if st.session_state.selected_folder in name])
+                st.metric(f"📊 Progress for {st.session_state.selected_folder}", 
+                         f"{labeled}/{total_images} labeled")
             except:
                 pass
         st.stop()
     
-    # Main columns
+    # Display
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # Display current image
         if st.session_state.current_image:
             st.image(st.session_state.current_image)
             st.caption(st.session_state.current_name)
             
-            # Show progress
-            st.caption(
-                f"📄 Page {st.session_state.page + 1} | "
-                f"🖼️ Image {st.session_state.current_index + 1} of {len(st.session_state.images)}"
-            )
+            # Debug: Check if current image is in labels
+            if st.session_state.debug_mode:
+                if st.session_state.current_name in st.session_state.all_labels:
+                    st.success("✅ This image IS in labels database")
+                else:
+                    st.error("❌ This image is NOT in labels database")
             
-            # Show if already labeled
-            if st.session_state.current_name in st.session_state.labels:
-                st.success("✅ This image is already labeled")
+            st.caption(f"Image {st.session_state.current_index + 1} of {len(st.session_state.images)}")
     
     with col2:
-        # Get existing label data
-        existing = st.session_state.labels.get(st.session_state.current_name, {})
+        existing = st.session_state.all_labels.get(st.session_state.current_name, {})
         
-        # Create form
         with st.form("label_form"):
-            side = st.radio(
-                "Vehicle Side",
-                SIDE_OPTIONS,
-                index=SIDE_OPTIONS.index(existing.get("side", "front"))
-            )
-            severity = st.selectbox(
-                "Severity",
-                SEVERITY_OPTIONS,
-                index=SEVERITY_OPTIONS.index(existing.get("severity", "minor"))
-            )
-            description = st.text_area(
-                "Damage Description",
-                value=existing.get("description", ""),
-                height=120,
-                placeholder="Describe the damage location, type, and extent..."
-            )
+            side = st.radio("Vehicle Side", SIDE_OPTIONS,
+                          index=SIDE_OPTIONS.index(existing.get("side", "front")))
+            severity = st.selectbox("Severity", SEVERITY_OPTIONS,
+                                  index=SEVERITY_OPTIONS.index(existing.get("severity", "minor")))
+            description = st.text_area("Damage Description",
+                                     value=existing.get("description", ""),
+                                     height=120)
             
-            # Buttons
             c1, c2, c3 = st.columns(3)
-            prev_btn = c1.form_submit_button("⬅️ Previous", use_container_width=True)
-            save_next_btn = c2.form_submit_button("💾 Save & Next", use_container_width=True)
-            next_btn = c3.form_submit_button("➡️ Next", use_container_width=True)
+            prev_btn = c1.form_submit_button("⬅️ Previous")
+            save_next_btn = c2.form_submit_button("💾 Save & Next")
+            next_btn = c3.form_submit_button("➡️ Next")
             
-            # Handle save
-            if save_next_btn:
-                if not description.strip():
-                    st.error("Please enter a description before saving.")
-                else:
-                    if save_label(
-                        st.session_state.current_name,
-                        description.strip(),
-                        side,
-                        severity
-                    ):
-                        # Move to next image
-                        if st.session_state.current_index < len(st.session_state.images) - 1:
-                            st.session_state.current_index += 1
-                        else:
-                            # Move to next page
-                            st.session_state.page += 1
-                            st.session_state.current_index = 0
-                            st.session_state.images = get_images_page(
-                                st.session_state.selected_folder,
-                                st.session_state.page,
-                                st.session_state.filter_unlabeled
-                            )
-                        
-                        load_current_image()
-                        st.rerun()
+            if save_next_btn and description.strip():
+                if save_label_with_debug(
+                    st.session_state.current_name,
+                    description.strip(),
+                    side,
+                    severity
+                ):
+                    # Refresh images list
+                    st.session_state.images = get_images_with_debug(
+                        st.session_state.selected_folder,
+                        st.session_state.page,
+                        st.session_state.filter_unlabeled
+                    )
+                    
+                    # Move to next if available
+                    if st.session_state.current_index < len(st.session_state.images) - 1:
+                        st.session_state.current_index += 1
+                    else:
+                        st.session_state.current_index = 0
+                    
+                    load_current_image()
+                    st.rerun()
             
-            # Handle navigation
             if prev_btn and st.session_state.current_index > 0:
                 st.session_state.current_index -= 1
                 load_current_image()
@@ -846,63 +889,145 @@ with tab1:
                 st.rerun()
 
 # =============================
-# TAB 2: LIVE DB PREVIEW
+# TAB 2: DATABASE
 # =============================
 with tab2:
-    st.header("📊 Live Supabase Table Preview")
+    st.header("📊 Database Inspection")
     
-    # Refresh button
-    if st.button("🔄 Refresh Live Data", type="primary"):
-        st.session_state.labels = load_labels(force_refresh=True)
-        st.rerun()
+    if st.button("🔄 Refresh Database View"):
+        st.session_state.all_labels = load_all_labels()
     
-    # Load data
+    # Show specific batch 16 data
+    st.subheader("🔍 Batch 16 Analysis")
+    
     try:
-        res = supabase.table("image_damage_labels").select("*").execute()
-        data = res.data
+        # Query specifically for batch 16
+        batch16_labels = supabase.table("image_damage_labels")\
+            .select("*")\
+            .ilike("image_path", "%batch_16%")\
+            .execute()
         
-        if not data:
-            st.info("No labels in database yet.")
-            st.stop()
-        
-        df = pd.DataFrame(data)
-        
-        # Display statistics
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Labels", len(df))
-        col2.metric("Unique Images", df["image_name"].nunique())
-        
-        # Add batch column if image_path exists
-        if 'image_path' in df.columns:
-            df['batch'] = df['image_path'].apply(lambda x: x.split('/')[0] if '/' in x and isinstance(x, str) else 'unknown')
-            col3.metric("Unique Batches", df['batch'].nunique())
-        
-        st.divider()
-        
-        # Show full table
-        st.subheader("🗂️ Full Label Table")
-        st.dataframe(df, width='stretch')
-        
+        if batch16_labels.data:
+            df_batch16 = pd.DataFrame(batch16_labels.data)
+            
+            # Check for image_958.jpeg
+            image_958 = df_batch16[df_batch16['image_name'].str.contains('958', case=False, na=False)]
+            
+            if not image_958.empty:
+                st.success(f"✅ Found {len(image_958)} records for image_958.jpeg in database")
+                st.dataframe(image_958)
+            else:
+                st.error("❌ No records found for image_958.jpeg in database")
+            
+            # Show all batch 16 labels
+            st.metric("Batch 16 Labels", len(df_batch16))
+            st.dataframe(df_batch16[['image_name', 'description', 'side', 'severity']])
+        else:
+            st.info("No labels found for batch 16")
+    
     except Exception as e:
-        st.error(f"Error loading database: {e}")
+        st.error(f"Error querying batch 16: {e}")
+    
+    st.divider()
+    
+    # Show all data
+    st.subheader("🗂️ All Database Records")
+    try:
+        all_data = supabase.table("image_damage_labels").select("*").execute()
+        if all_data.data:
+            df_all = pd.DataFrame(all_data.data)
+            
+            # Add batch column
+            if 'image_path' in df_all.columns:
+                df_all['batch'] = df_all['image_path'].apply(
+                    lambda x: x.split('/')[0] if isinstance(x, str) and '/' in x else 'unknown'
+                )
+            
+            st.metric("Total Labels", len(df_all))
+            st.dataframe(df_all)
+        else:
+            st.info("No labels in database")
+    except Exception as e:
+        st.error(f"Error loading all data: {e}")
 
 # =============================
-# DEBUG PANEL (Optional)
+# TAB 3: DEBUG PANEL
 # =============================
-with st.expander("🔧 Debug Info"):
-    st.write("### Session State")
-    debug_data = {}
-    for k, v in st.session_state.items():
-        if isinstance(v, dict):
-            debug_data[k] = f"dict with {len(v)} items"
-        elif isinstance(v, list):
-            debug_data[k] = f"list with {len(v)} items"
-        else:
-            debug_data[k] = str(v)[:100]
-    st.json(debug_data)
+with tab3:
+    st.header("🔧 Debug Information")
     
-    st.write("### Database Status")
-    st.write(f"Labels loaded: {len(st.session_state.labels)}")
-    st.write(f"Current folder: {st.session_state.selected_folder}")
-    st.write(f"Images in view: {len(st.session_state.images)}")
+    col1, col2 = st.columns(2)
     
+    with col1:
+        st.subheader("Session State")
+        debug_state = {}
+        for key, value in st.session_state.items():
+            if isinstance(value, dict):
+                debug_state[key] = f"dict with {len(value)} items"
+                if key == 'all_labels' and value:
+                    # Show sample of labels
+                    sample = list(value.items())[:5]
+                    debug_state[f"{key}_sample"] = sample
+            elif isinstance(value, list):
+                debug_state[key] = f"list with {len(value)} items"
+                if key == 'images' and value:
+                    debug_state[f"{key}_sample"] = [img['name'] for img in value[:5]]
+            else:
+                debug_state[key] = str(value)
+        
+        st.json(debug_state)
+    
+    with col2:
+        st.subheader("System Checks")
+        
+        # Check storage
+        if st.button("📁 Check Storage Contents"):
+            try:
+                files = supabase.storage.from_(BUCKET_NAME).list("")
+                folders = [f["name"] for f in files if f.get("id") is None]
+                st.success(f"Found {len(folders)} folders")
+                st.write(folders)
+            except Exception as e:
+                st.error(f"Storage error: {e}")
+        
+        # Check table schema
+        if st.button("🗃️ Check Table Schema"):
+            try:
+                # Get a sample to infer schema
+                sample = supabase.table("image_damage_labels").select("*").limit(1).execute()
+                if sample.data:
+                    st.success("Table schema:")
+                    st.json(sample.data[0])
+                else:
+                    st.info("Table is empty")
+            except Exception as e:
+                st.error(f"Schema error: {e}")
+        
+        # Direct query for the problematic image
+        st.subheader("Direct Query Test")
+        test_image = st.text_input("Test image name", "image_958.jpeg")
+        if st.button("🔍 Query This Image"):
+            check_specific_image(test_image)
+
+# =============================
+# BOTTOM DEBUG INFO
+# =============================
+st.divider()
+st.subheader("🔍 Real-time Status")
+
+# Create a status dashboard
+status_cols = st.columns(4)
+
+with status_cols[0]:
+    st.metric("Loaded Labels", len(st.session_state.all_labels))
+with status_cols[1]:
+    st.metric("Current Images", len(st.session_state.images))
+with status_cols[2]:
+    if st.session_state.current_name:
+        is_labeled = st.session_state.current_name in st.session_state.all_labels
+        st.metric("Current Image Status", "✅ Labeled" if is_labeled else "❌ Unlabeled")
+with status_cols[3]:
+    st.metric("Selected Folder", st.session_state.selected_folder or "None")
+
+# Show last 5 actions
+st.caption("🕒 Debug mode active - All operations are logged")
