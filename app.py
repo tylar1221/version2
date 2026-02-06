@@ -307,9 +307,9 @@ for k, v in defaults.items():
 # HELPERS
 # =============================
 def load_labels():
-    """Load labels from Supabase - no caching to ensure fresh data"""
     res = supabase.table("image_damage_labels").select("*").execute()
-    return {r["image_name"]: r for r in res.data}
+    return {r["image_path"]: r for r in res.data if r["image_path"]}
+
 
 def get_folders():
     files = supabase.storage.from_(BUCKET_NAME).list("")
@@ -326,10 +326,11 @@ def get_images_page(folder, page=0, unlabeled_only=True):
     ]
 
     if unlabeled_only:
-        images = [
-            img for img in images
-            if img["name"] not in st.session_state.labels
-        ]
+    images = [
+        img for img in images
+        if f"{folder}/{img['name']}" not in st.session_state.labels
+    ]
+
 
     start = page * PAGE_SIZE
     end = start + PAGE_SIZE
@@ -437,9 +438,9 @@ with tab1:
         )
 
     with col2:
-        existing = st.session_state.labels.get(
-            st.session_state.current_name, {}
-        )
+        image_path = f"{st.session_state.selected_folder}/{st.session_state.current_name}"
+        existing = st.session_state.labels.get(image_path, {})
+
 
         with st.form("label_form"):
             side = st.radio(
